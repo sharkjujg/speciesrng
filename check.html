@@ -1,0 +1,147 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Checks</title>
+<!-- Self-check: serve this folder (python -m http.server) and open /check.html. Title becomes "PASS" or "FAIL n".
+     Generic maths is tested here; rule fixtures and pool checks for this game are in fixtures.js. -->
+<pre id="out" style="font:13px/1.4 monospace;white-space:pre-wrap">running…</pre>
+<script type="module">
+import { RULES, badgeTier, rollTier, evaluatePool, randomIndex, dayKey, nextReset, weekStartKey, rollId, parseRollId, level, fmtPct, oneIn, shareText } from './engine.js';
+import { prep } from './rules.js';
+import { TIER_RANK, buildAchievements, progressOf, valueOf, unlockedIds } from './achievements.js';
+import { V, base, cases, poolChecks } from './fixtures.js';
+
+const out = []; let fails = 0;
+const ok = (name, cond) => { if (!cond) fails++; out.push(`${cond ? 'PASS' : 'FAIL'} ${name}`); };
+const eq = (name, got, want) => ok(`${name}${JSON.stringify(got) === JSON.stringify(want) ? '' : ` (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`}`, JSON.stringify(got) === JSON.stringify(want));
+
+// --- this game's badge predicates: qualify, narrowly fail, boundary, missing, malformed ---
+for (const [id, over, want] of cases) {
+  const rule = RULES.find((r) => r.id === id);
+  ok(`${id} ${JSON.stringify(over)} -> ${want}`, !!rule && rule.test(prep({ ...base, ...over }), V) === want);
+}
+ok('rule ids are unique', new Set(RULES.map((r) => r.id)).size === RULES.length);
+ok('every active rule has at least one fixture', RULES.filter((r) => !r.deferred).every((r) => cases.some(([id]) => id === r.id)));
+ok('deferred rules explain why', RULES.filter((r) => r.deferred).every((r) => typeof r.deferred === 'string' && r.deferred.length > 20));
+
+// --- tier boundaries (integer math) ---
+eq('badge tiers at n=100000', [1, 10, 11, 100, 101, 1000, 1001, 10000, 10001].map((k) => badgeTier(k, 100000)),
+  ['Anomaly', 'Anomaly', 'Epic', 'Epic', 'Rare', 'Rare', 'Uncommon', 'Uncommon', 'Common']);
+eq('Mythic needs a larger pool', badgeTier(1, 200000), 'Mythic');
+eq('roll tiers at n=1000', [10, 11, 50, 51, 100, 101, 250, 251, 500, 501, 990, 991, 1000].map((c) => rollTier(c, 1000)),
+  ['Mythic', 'Anomaly', 'Anomaly', 'Epic', 'Epic', 'Rare', 'Rare', 'Uncommon', 'Uncommon', 'Common', 'Common', 'Low Roll', 'Low Roll']);
+eq('everyone tied is Common', rollTier(5, 5, true), 'Common');
+
+// --- scoring on a four-member pool whose answers can be worked out by hand ---
+const toy = [
+  { id: 'a', family: 'F', test: (m) => m.x >= 2 }, // 3 of 4 -> 133 RP
+  { id: 'b', family: 'F', test: (m) => m.x >= 4 }, // 1 of 4 -> 400 RP, outranks a in the same family
+  { id: 'c', family: 'G', test: (m) => m.x % 2 === 0 }, // 2 of 4 -> 200 RP
+  { id: 'd', family: 'H', test: (m) => m.x >= 3 }, // 2 of 4 -> 200 RP
+  { id: 'e', family: 'H', test: (m) => m.x >= 3 }, // exact tie with d: the first listed scores
+  { id: 'z', family: 'Z', deferred: 'later' },
+];
+const mini = evaluatePool({ meta: { publishedAt: V }, members: [{ x: 1 }, { x: 2 }, { x: 3 }, { x: 4 }] }, toy, (m) => m);
+eq('scores follow family suppression', mini.evals.map((e) => e.rp), [0, 333, 333, 800]);
+eq('roll tiers follow tied percentiles', mini.evals.map((e) => e.tier), ['Low Roll', 'Common', 'Common', 'Rare']);
+eq('the highest family weight counts, the rest add 0', mini.evals[3].awards.map((a) => [a.id, a.rp]), [['a', 0], ['b', 400], ['c', 200], ['d', 200], ['e', 0]]);
+eq('nominal weight is round(100 / p)', mini.stats.a, { k: 3, nominal: 133, tier: 'Common' });
+eq('deferred badge is inactive', mini.stats.z, { k: 0, nominal: 0, tier: null });
+ok('percentile counts ties as at-or-above', mini.evals.every((e) => e.c === mini.evals.filter((x) => x.rp >= e.rp).length));
+
+// --- achievements: derived from rolls, scaled from the pool ---
+const shelvesOf = (m) => [['Size', 'all'], ...(m.x >= 2 ? [['Top', 'three']] : []), ['Parity', m.x % 2 ? 'odd' : 'even']];
+const site = { noun: 'thing', nouns: 'things' };
+const cat = buildAchievements(mini, toy, shelvesOf, site);
+const find = (kind, goal, p) => cat.list.find((a) => a.kind === kind && a.goal === goal && (p === undefined || a.p === p));
+ok('achievement ids are unique', new Set(cat.list.map((a) => a.id)).size === cat.list.length);
+eq('shelf goals follow the shelf size; shelves under 3 members get none', ['Size\u0001all', 'Top\u0001three', 'Parity\u0001odd', 'Parity\u0001even'].map((k) => cat.list.filter((a) => a.p === k).map((a) => a.goal)), [[1, 2, 4], [1, 2, 3], [], []]);
+ok('no achievement for a tier the pool cannot produce', !cat.list.some((a) => a.kind === 'tier' && a.p === TIER_RANK.Epic) && cat.list.some((a) => a.kind === 'tier' && a.p === TIER_RANK.Rare));
+const big = evaluatePool({ meta: { publishedAt: V }, members: Array.from({ length: 1000 }, (_, i) => ({ x: i + 1 })) }, toy, (m) => m);
+const bigCat = buildAchievements(big, toy, shelvesOf, site);
+const goalsOf = (c) => c.list.filter((a) => a.kind === 'distinct').map((a) => a.goal);
+eq('discovery goals grow with the pool (n=4 vs n=1000)', [goalsOf(cat), goalsOf(bigCat).length > goalsOf(cat).length, Math.max(...goalsOf(bigCat))], [[1, 2, 4], true, 1000]);
+ok('a bigger pool gets more achievements', bigCat.list.length > cat.list.length);
+const roll = (day, index) => ({ day, index, rp: mini.evals[index].rp, tier: mini.evals[index].tier, awards: mini.evals[index].awards });
+const history = [roll('2026-11-04', 0), roll('2026-11-01', 3), roll('2026-11-02', 3)]; // deliberately out of order
+const st = progressOf(cat, history);
+eq('progress counts days, streak, distinct, repeats, points', [st.days, st.streak, st.distinct, st.repeat, st.rp], [3, 2, 2, 2, 1600]);
+eq('progress counts badges and shelves', [st.badges.size, st.badges.get('b'), st.shelves.get('Top\u0001three').size, st.shelves.get('Size\u0001all').size], [5, 2, 1, 2]);
+const has = (kind, goal, p) => valueOf(find(kind, goal, p), st) >= goal;
+eq('unlocked versus not yet', [has('days', 3), has('days', 7), has('streak', 2), has('streak', 3), has('repeat', 2), has('repeat', 3), has('badge', 1, 'a'), has('badge', 2, 'a'), has('badge', 5, 'a'), has('shelf', 1, 'Top\u0001three'), has('shelf', 2, 'Top\u0001three'), has('shelf', 2, 'Size\u0001all')],
+  [true, false, true, false, true, false, true, true, false, true, false, true]);
+{
+  const fam = (id) => cat.list.find((a) => a.kind === 'family' && a.p.includes(id));
+  const x3 = progressOf(cat, [roll('2026-11-01', 2)]); // x=3 earns a, d and e: all of family H but only half of family F
+  eq('a family unlocks only when every badge in it is earned', [valueOf(fam('d'), x3) >= fam('d').goal, valueOf(fam('a'), x3) >= fam('a').goal, valueOf(fam('a'), st) >= fam('a').goal], [true, false, true]);
+}
+const one = unlockedIds(cat.list, progressOf(cat, [history[1]])), two = unlockedIds(cat.list, progressOf(cat, [history[1], history[2]]));
+ok('the second consecutive day unlocks the 2-day streak and nothing is lost', !one.has(find('streak', 2).id) && two.has(find('streak', 2).id) && [...one].every((id) => two.has(id)));
+
+// --- sampling ---
+const seq = (...xs) => () => xs.shift();
+eq('values past the last full multiple are rejected (n=3)', randomIndex(3, seq(4294967295, 4294967294)), 2);
+eq('n=7 rejects the final 4 values', randomIndex(7, seq(2 ** 32 - 1, 2 ** 32 - 4, 2 ** 32 - 5)), 6);
+const sweep = Array.from({ length: 12 }, (_, x) => randomIndex(4, seq(x)));
+eq('every index maps equally within the accepted range', [0, 1, 2, 3].map((i) => sweep.filter((v) => v === i).length), [3, 3, 3, 3]);
+{
+  const counts = [0, 0, 0, 0, 0]; for (let i = 0; i < 20000; i++) counts[randomIndex(5)]++;
+  ok(`default RNG is roughly uniform ${counts}`, counts.every((c) => c > 3600 && c < 4400));
+}
+
+// --- days, ids, levels, formatting ---
+eq('last millisecond of a UTC day', dayKey(Date.UTC(2026, 10, 1, 23, 59, 59, 999)), '2026-11-01');
+eq('first millisecond of the next day', dayKey(Date.UTC(2026, 10, 2)), '2026-11-02');
+eq('reset instant', nextReset(Date.UTC(2026, 10, 1, 23, 59, 59, 999)), Date.UTC(2026, 10, 2));
+eq('exactly at midnight resets 24h later', nextReset(Date.UTC(2026, 10, 2)), Date.UTC(2026, 10, 3));
+eq('week starts Monday (Sunday looks back)', weekStartKey(Date.UTC(2026, 10, 1)), '2026-10-26');
+eq('Monday is its own week start', weekStartKey(Date.UTC(2026, 10, 2)), '2026-11-02');
+eq('roll id round trip', parseRollId(rollId('v1', '2026-11-01', 123)), { pool: 'v1', day: '2026-11-01', index: 123 });
+ok('bad roll ids are rejected', ['', 'v1.20261101.', 'x.20261101.1', 'v1.2026-11-01.1', 'v1.20261101.1e3'].every((s) => parseRollId(s) === null));
+eq('levels', [0, 1, 7, 99, 100].map(level), [{ level: 0, next: 1 }, { level: 1, next: 2 }, { level: 3, next: 10 }, { level: 6, next: 100 }, { level: 7, next: null }]);
+eq('percent formatting', [fmtPct(1, 2000), fmtPct(3, 2000), fmtPct(1000, 2000), fmtPct(1, 3), oneIn(1, 2000)], ['0.05%', '0.15%', '50%', '33.3%', '2,000']);
+eq('one-in formatting stays honest above 10%', [oneIn(1427, 2000), oneIn(1000, 2000), oneIn(163, 2000), oneIn(2000, 2000)], ['1.4', '2', '12', '1']);
+ok('share text', shareText({ tier: 'Rare', c: 360, n: 2000, rp: 12000, fresh: ['a', 'b', 'c'] }, 'U', 'Game') === 'Game daily roll, Rare, top 18% of eligible pool, 12,000 RP, 3 new badges\nU');
+
+// --- the published pool ---
+const buf = await (await fetch('data/pool-v1.json')).arrayBuffer();
+const raw = JSON.parse(new TextDecoder().decode(buf));
+const pool = evaluatePool(raw);
+ok('pool ids are unique strings', new Set(raw.members.map((m) => m.id)).size === pool.n && raw.members.every((m) => typeof m.id === 'string'));
+eq('evaluation is deterministic', evaluatePool(raw).evals, pool.evals);
+ok('no award carries zero weight', pool.evals.every((e) => e.awards.every((a) => a.nominal > 0)));
+ok('at most one scoring badge per family', pool.evals.every((e) => { const f = e.awards.filter((a) => a.rp).map((a) => RULES.find((r) => r.id === a.id).family); return new Set(f).size === f.length; }));
+ok('tier counts add up to the pool size', Object.values(pool.tierCounts).reduce((s, x) => s + x, 0) === pool.n);
+ok('Mythic holds at most 1% of the pool', (pool.tierCounts.Mythic || 0) * 100 <= pool.n);
+ok('a typical roll earns points (median RP > 0): a pool of only rare badges would make most rolls worthless', pool.scores.median > 0);
+ok('Low Roll holds at most 25% of the pool (a bigger share means a tie pile-up at the bottom)', (pool.tierCounts['Low Roll'] || 0) * 4 <= pool.n);
+const empty = pool.evals.filter((e) => e.awards.length === 0).length;
+ok(`every record earns at least one badge (${empty} of ${pool.n} earn none): a 0 RP roll feels broken`, empty === 0);
+poolChecks(raw, pool, ok);
+
+// --- the site config loads, and every real record renders through it (a syntax error or a bad record would otherwise only show in the app) ---
+{
+  const site = (await import('./site.js')).default;
+  const need = ['key', 'name', 'pageTitle', 'noun', 'nouns', 'thing', 'worldNote', 'repo', 'headline', 'intro', 'notice', 'header', 'label', 'shelves', 'facts', 'art', 'poolNotice', 'poolExtra', 'aboutData', 'terms'];
+  ok('site.js loads and defines every field app.js uses', need.every((k) => site[k] !== undefined));
+  let bad = null;
+  for (const m of pool.members) {
+    try {
+      const h = site.header(m);
+      const ok1 = typeof h.title === 'string' && h.title && typeof site.label(m) === 'string' && site.shelves(m).every(([g, l]) => typeof g === 'string' && typeof l === 'string' && l)
+        && site.facts(m).every(([k, v]) => typeof k === 'string' && typeof v === 'string' && !/\b(null|undefined|NaN)\b/.test(v)) && (site.art(m).startsWith('<svg') || site.art(m).startsWith('<img'));
+      if (!ok1) { bad = m.id; break; }
+    } catch (e) { bad = `${m.id}: ${e.message}`; break; }
+  }
+  ok(`every record renders through site.js (header, label, shelves, facts, art)${bad ? ` (first failure: ${bad})` : ''}`, bad === null);
+  ok('the pool page extra renders', typeof site.poolExtra(pool) === 'string');
+}
+const inactive = RULES.filter((r) => !pool.stats[r.id].k).map((r) => r.id);
+out.push(`INFO pool size ${pool.n}, sha256 ${[...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map((b) => b.toString(16).padStart(2, '0')).join('')}`);
+out.push(`INFO inactive badges: ${inactive.join(', ') || 'none'}`);
+out.push(`INFO rp min/median/max ${pool.scores.min}/${pool.scores.median}/${pool.scores.max}; roll tiers ${JSON.stringify(pool.tierCounts)}`);
+for (const r of RULES) out.push(`INFO ${r.id.padEnd(22)} k=${String(pool.stats[r.id].k).padStart(4)} ${String(pool.stats[r.id].tier).padEnd(9)} ${pool.stats[r.id].nominal} RP`);
+
+out.unshift(fails ? `${fails} FAILED` : 'ALL PASSED');
+document.getElementById('out').textContent = out.join('\n');
+document.title = fails ? `FAIL ${fails}` : 'PASS';
+</script>
