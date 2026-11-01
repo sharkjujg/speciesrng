@@ -355,7 +355,7 @@ async function poolPage() {
       `<tr><td>${chip(t)}</td><td>${p}</td><td>${possible.has(t) ? 'Yes' : 'No: needs a larger pool'}</td><td class="n">${RULES.filter((r) => pool.stats[r.id].tier === t).length}</td></tr>`).join('')}</tbody></table>
     <p class="small muted">With ${fmtNum(n)} ${N} the rarest possible badge is 1 in ${fmtNum(n)}, so bands beyond that are disabled rather than invented.</p>
     <h2>Roll rarity: where a total score falls in the pool</h2>
-    <table><thead><tr><th>Tier</th><th>Place in pool</th><th class="n">${esc(site.thing)}s</th></tr></thead><tbody>${tiers.map(([t, d]) =>
+    <table><thead><tr><th>Tier</th><th>Place in pool</th><th class="n">${esc(site.nouns[0].toUpperCase() + site.nouns.slice(1))}</th></tr></thead><tbody>${tiers.map(([t, d]) =>
       `<tr><td>${chip(t)}</td><td>${d}</td><td class="n">${fmtNum(pool.tierCounts[t] || 0)}</td></tr>`).join('')}</tbody></table>
     <p class="small muted">Tied ${N} share a tier, so a tier can be empty when ties straddle its boundary.</p>`);
 }

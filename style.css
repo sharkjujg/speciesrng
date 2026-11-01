@@ -75,6 +75,7 @@ table { width: 100%; max-width: 40rem; margin: .6rem auto; border-collapse: coll
 th, td { padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
 th { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 26rem) { table { font-size: .82rem; } th, td { padding: .4rem .3rem; } th { letter-spacing: .03em; } }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1.2rem; margin: .7rem 0 0; font-size: .88rem; text-align: left; }
 dl.facts dt { color: var(--muted); } dl.facts dd { margin: 0; overflow-wrap: anywhere; }
 ul.plain { list-style: none; margin: 0; padding: 0; }
